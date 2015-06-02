@@ -6,27 +6,24 @@ use Gitlab\Client;
 use Gitlab\Exception\RuntimeException;
 
 $packages_file = __DIR__ . '/../cache/packages.json';
-$ttl = 0; // seconds
 
 /**
  * Output a json file, sending max-age header, then dies
  */
-$outputFile = function ($file) use ($ttl) {
+$outputFile = function ($file) {
     $mtime = filemtime($file);
 
-    if (time() <= $mtime + $ttl) {
-        header('Content-Type: application/json');
-        header('Cache-Control: max-age=' . $ttl);
-        header('Last-Modified: ' . gmdate('r', $mtime));
-        readfile($file);
-        die();
-    }
-};
+    header('Content-Type: application/json');
+    header('Last-Modified: ' . gmdate('r', $mtime));
+    header('Cache-Control: max-age=0');
 
-// Full page cache
-if (file_exists($packages_file)) {
-    $outputFile($packages_file);
-}
+    if (!empty($_SERVER['HTTP_IF_MODIFIED_SINCE']) && ($since = strtotime($_SERVER['HTTP_IF_MODIFIED_SINCE'])) && $since >= $mtime) {
+        header('HTTP/1.0 304 Not Modified');
+    } else {
+        readfile($file);
+    }
+    die();
+};
 
 // See ../confs/samples/gitlab.ini
 $config_file = __DIR__ . '/../confs/gitlab.ini';
@@ -40,7 +37,6 @@ $client = new Client($confs['endpoint']);
 $client->authenticate($confs['api_key'], Client::AUTH_URL_TOKEN);
 
 $projects = $client->api('projects');
-$groups = $client->api('groups');
 $repos = $client->api('repositories');
 
 /**
@@ -74,12 +70,10 @@ $fetch_composer = function($project, $ref) use ($repos) {
  * @return array   [$version => ['name' => $name, 'version' => $version, 'source' => [...]]]
  */
 $fetch_ref = function($project, $ref) use ($fetch_composer) {
-    if ($ref['name'] == 'master') {
-        $version = 'dev-master';
-    } elseif (preg_match('/^v?\d+\.\d+(\.\d+)*(\-(dev|patch|alpha|beta|RC)\d*)?$/', $ref['name'])) {
+    if (preg_match('/^v?\d+\.\d+(\.\d+)*(\-(dev|patch|alpha|beta|RC)\d*)?$/', $ref['name'])) {
         $version = $ref['name'];
     } else {
-        return array();
+        $version = 'dev-' . $ref['name'];
     }
 
     if (($data = $fetch_composer($project, $ref['commit']['id'])) !== false) {
@@ -149,30 +143,34 @@ $load_data = function($project) use ($fetch_refs) {
 };
 
 $all_projects = array();
+$mtime = 0;
 
-/**
- * Load all groups (max 1000, on 1 page), then load all projects for this group
- * It is not possible to directly load all projects
- * @link https://github.com/gitlabhq/gitlabhq/issues/3839
- */
-foreach ($groups->all(1, 1000) as $group) {
-    $g = $groups->show($group['id']);
+$me = $client->api('users')->me();
+if ((bool)$me['is_admin']) {
+	$projects_api_method = 'all';
+} else {
+	$projects_api_method = 'accessible';
+}
 
-    foreach ($g['projects'] as $project) {
+for ($page = 1; count($p = $projects->$projects_api_method($page, 100)); $page++) {
+    foreach ($p as $project) {
         $all_projects[] = $project;
+        $mtime = max($mtime, strtotime($project['last_activity_at']));
     }
 }
 
-$packages = array();
-foreach ($all_projects as $project) {
-    if ($package = $load_data($project)) {
-        $packages[$project['path_with_namespace']] = $package;
+if (!file_exists($packages_file) || filemtime($packages_file) < $mtime) {
+    $packages = array();
+    foreach ($all_projects as $project) {
+        if ($package = $load_data($project)) {
+            $packages[$project['path_with_namespace']] = $package;
+        }
     }
-}
-$data = json_encode(array(
-    'packages' => array_filter($packages),
-));
+    $data = json_encode(array(
+        'packages' => array_filter($packages),
+    ));
 
-file_put_contents($packages_file, $data);
+    file_put_contents($packages_file, $data);
+}
 
 $outputFile($packages_file);
