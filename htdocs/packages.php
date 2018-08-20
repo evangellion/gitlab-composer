@@ -69,7 +69,7 @@ $fetch_composer = function($project, $ref) use ($repos) {
  * @param string $ref commit id
  * @return array   [$version => ['name' => $name, 'version' => $version, 'source' => [...]]]
  */
-$fetch_ref = function($project, $ref) use ($fetch_composer) {
+$fetch_ref = function($project, $ref) use ($fetch_composer, $confs) {
     if (preg_match('/^v?\d+\.\d+(\.\d+)*(\-(dev|patch|alpha|beta|RC)\d*)?$/', $ref['name'])) {
         $version = $ref['name'];
     } else {
@@ -79,7 +79,7 @@ $fetch_ref = function($project, $ref) use ($fetch_composer) {
     if (($data = $fetch_composer($project, $ref['commit']['id'])) !== false) {
         $data['version'] = $version;
         $data['source'] = array(
-            'url'       => $project['ssh_url_to_repo'],
+            'url'       => $confs['use_https']  ? $project['http_url_to_repo'] : $project['ssh_url_to_repo'],
             'type'      => 'git',
             'reference' => $ref['commit']['id'],
         );
