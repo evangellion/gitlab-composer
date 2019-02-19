@@ -4,8 +4,14 @@ require __DIR__ . '/../vendor/autoload.php';
 
 use Gitlab\Client;
 use Gitlab\Exception\RuntimeException;
+use Monolog\Handler\StreamHandler;
+use Monolog\Logger;
 
 $packages_file = __DIR__ . '/../cache/packages.json';
+
+$log = new Logger('name');
+$log->pushHandler(new StreamHandler(__DIR__ . '/../logs/logs.log', Logger::INFO));
+$log->info('Start processing');
 
 /**
  * Output a json file, sending max-age header, then dies
@@ -46,7 +52,7 @@ $repos = $client->api('repositories');
  * @param string $ref commit id
  * @return array|false
  */
-$fetch_composer = function($project, $ref) use ($repos) {
+$fetch_composer = function ($project, $ref) use ($repos) {
     try {
         $data = array();
         $c = $repos->blob($project['id'], $ref, 'composer.json');
@@ -69,7 +75,7 @@ $fetch_composer = function($project, $ref) use ($repos) {
  * @param string $ref commit id
  * @return array   [$version => ['name' => $name, 'version' => $version, 'source' => [...]]]
  */
-$fetch_ref = function($project, $ref) use ($fetch_composer, $confs) {
+$fetch_ref = function ($project, $ref) use ($fetch_composer, $confs) {
     if (preg_match('/^v?\d+\.\d+(\.\d+)*(\-(dev|patch|alpha|beta|RC)\d*)?$/', $ref['name'])) {
         $version = $ref['name'];
     } else {
@@ -79,8 +85,8 @@ $fetch_ref = function($project, $ref) use ($fetch_composer, $confs) {
     if (($data = $fetch_composer($project, $ref['commit']['id'])) !== false) {
         $data['version'] = $version;
         $data['source'] = array(
-            'url'       => $confs['use_https']  ? $project['http_url_to_repo'] : $project['ssh_url_to_repo'],
-            'type'      => 'git',
+            'url' => $confs['use_https'] ? $project['http_url_to_repo'] : $project['ssh_url_to_repo'],
+            'type' => 'git',
             'reference' => $ref['commit']['id'],
         );
 
@@ -95,7 +101,7 @@ $fetch_ref = function($project, $ref) use ($fetch_composer, $confs) {
  * @param array $project
  * @return array   Same as $fetch_ref, but for all refs
  */
-$fetch_refs = function($project) use ($fetch_ref, $repos) {
+$fetch_refs = function ($project) use ($fetch_ref, $repos) {
     $datas = array();
 
     foreach (array_merge($repos->branches($project['id']), $repos->tags($project['id'])) as $ref) {
@@ -114,9 +120,9 @@ $fetch_refs = function($project) use ($fetch_ref, $repos) {
  * @param array $project
  * @return array Same as $fetch_refs
  */
-$load_data = function($project) use ($fetch_refs) {
-    $file    = __DIR__ . "/../cache/{$project['path_with_namespace']}.json";
-    $mtime   = strtotime($project['last_activity_at']);
+$load_data = function ($project) use ($fetch_refs) {
+    $file = __DIR__ . "/../cache/{$project['path_with_namespace']}.json";
+    $mtime = strtotime($project['last_activity_at']);
 
     if (!is_dir(dirname($file))) {
         mkdir(dirname($file), 0777, true);
@@ -146,22 +152,21 @@ $all_projects = array();
 $mtime = 0;
 
 $me = $client->api('users')->me();
-if ((bool)$me['is_admin']) {
-	$projects_api_method = 'all';
-} else {
-	$projects_api_method = 'accessible';
-}
+$log->info('Logged as', $me);
 
-for ($page = 1; count($p = $projects->$projects_api_method($page, 100)); $page++) {
+for ($page = 1; count($p = $projects->accessible($page, 100)); $page++) {
     foreach ($p as $project) {
         $all_projects[] = $project;
         $mtime = max($mtime, strtotime($project['last_activity_at']));
     }
 }
+$log->info('Found projects count: ' . count($all_projects));
 
 if (!file_exists($packages_file) || filemtime($packages_file) < $mtime) {
     $packages = array();
     foreach ($all_projects as $project) {
+        $log->info('Processing (' . $project['name_with_namespace'].')');
+
         if ($package = $load_data($project)) {
             $packages[$project['path_with_namespace']] = $package;
         }
@@ -169,7 +174,7 @@ if (!file_exists($packages_file) || filemtime($packages_file) < $mtime) {
     $data = json_encode(array(
         'packages' => array_filter($packages),
     ));
-
+    $log->info('Put content to file ' . $packages_file);
     file_put_contents($packages_file, $data);
 }
 
