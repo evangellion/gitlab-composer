@@ -11,7 +11,6 @@ $packages_file = __DIR__ . '/../cache/packages.json';
 
 $log = new Logger('name');
 $log->pushHandler(new StreamHandler(__DIR__ . '/../logs/logs.log', Logger::INFO));
-$log->info('Start processing');
 
 /**
  * Output a json file, sending max-age header, then dies
@@ -39,6 +38,16 @@ if (!file_exists($config_file)) {
 }
 $confs = parse_ini_file($config_file);
 
+if ($confs['debug'] ?? false) {
+    $log->pushHandler(new StreamHandler('php://stdout', Logger::INFO));
+}
+
+$log->info('Start processing');
+
+$groups = array_map('trim', explode(';', $confs['groups'] ?? ''));
+$groups = array_map('mb_strtolower', $groups);
+
+$log->info('Filter by groups ' . $confs['groups']);
 $client = new Client($confs['endpoint']);
 $client->authenticate($confs['api_key'], Client::AUTH_URL_TOKEN);
 
@@ -164,8 +173,29 @@ $log->info('Found projects count: ' . count($all_projects));
 
 if (!file_exists($packages_file) || filemtime($packages_file) < $mtime) {
     $packages = array();
+    $filtered_projects = array();
     foreach ($all_projects as $project) {
-        $log->info('Processing (' . $project['name_with_namespace'].')');
+        if (!empty($groups)) {
+            $name = mb_strtolower($project['namespace']['name']);
+            if (!in_array($name, $groups)) {
+                $log->info('Skip project not in group ' . $project['name_with_namespace']);
+                continue;
+            }
+        }
+
+        if ($project['archived'] === true) {
+            $log->info('Skip project is archive ' . $project['name_with_namespace']);
+
+            continue;
+        }
+
+        $filtered_projects[] = $project;
+    }
+
+    $log->info('Filtered projects: ' . count($filtered_projects));
+
+    foreach ($filtered_projects as $project) {
+        $log->info('Processing (' . $project['name_with_namespace'] . ')');
 
         if ($package = $load_data($project)) {
             $packages[$project['path_with_namespace']] = $package;
